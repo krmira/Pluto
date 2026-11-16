@@ -36,6 +36,17 @@ fn multimedia_binary(tool: &str) -> PathBuf {
     PathBuf::from(filename)
 }
 
+fn multimedia_command(tool: &str) -> Command {
+    let mut command = Command::new(multimedia_binary(tool));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
 pub fn cancel_export(process: &SharedExport) -> Result<(), String> {
     let mut current = process.lock().map_err(|_| "Export process lock failed".to_owned())?;
     if let Some(child) = current.as_mut() { child.kill().map_err(|error| format!("Could not cancel export: {error}"))?; }
@@ -647,7 +658,7 @@ pub fn render_timeline(process: SharedExport, clips: Vec<Value>, settings: Value
     args.push(output.to_string_lossy().into_owned());
     let mut current = process.lock().map_err(|_| "Export process lock failed".to_owned())?;
     if current.is_some() { return Err("Another export is already running".into()); }
-    let mut child = Command::new(multimedia_binary("ffmpeg"))
+    let mut child = multimedia_command("ffmpeg")
         .args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
         .spawn().map_err(|error| format!("Could not start FFmpeg. Install FFmpeg or set PLUTO_FFMPEG_DIR: {error}"))?;
     if let Some(stdout) = child.stdout.take() {

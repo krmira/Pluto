@@ -17,6 +17,7 @@ use std::{
     hash::{Hash, Hasher},
     sync::mpsc::{self, Receiver, Sender, TryRecvError},
     thread,
+    time::{Duration, Instant},
 };
 
 use crate::{icons, theme};
@@ -169,6 +170,7 @@ pub struct PlutoApp {
     name: String,
     editing_name: bool,
     playing: bool,
+    loop_playback: bool,
     playhead: f64,
     duration: f64,
     project_duration: f64,
@@ -208,6 +210,8 @@ pub struct PlutoApp {
     next_group_id: u64,
     show_guides: bool,
     status: Option<String>,
+    status_since: Instant,
+    last_status: Option<String>,
     export_process: pluto_media_engine::SharedExport,
     export_events_tx: Sender<ExportEvent>,
     export_events_rx: Receiver<ExportEvent>,
@@ -258,9 +262,10 @@ impl PlutoApp {
         }
 
         Self {
-            name: "Untitled project".to_owned(),
+            name: "Untitled Project".to_owned(),
             editing_name: false,
             playing: false,
+            loop_playback: false,
             playhead: 0.0,
             duration: 60.0,
             project_duration: 0.0,
@@ -300,6 +305,8 @@ impl PlutoApp {
             next_group_id: 1,
             show_guides: false,
             status: None,
+            status_since: Instant::now(),
+            last_status: None,
             export_process: pluto_media_engine::SharedExport::default(),
             export_events_tx,
             export_events_rx,
@@ -323,6 +330,21 @@ impl PlutoApp {
     }
 
     fn tick(&mut self, ctx: &egui::Context) {
+        match self.status.clone() {
+            Some(status) if self.last_status.as_deref() != Some(status.as_str()) => {
+                self.last_status = Some(status);
+                self.status_since = Instant::now();
+            }
+            Some(_) if self.status_since.elapsed().as_secs_f32() >= 4.0 => {
+                self.status = None;
+                self.last_status = None;
+            }
+            None => self.last_status = None,
+            _ => {}
+        }
+        if self.status.is_some() {
+            ctx.request_repaint_after(Duration::from_secs(4).saturating_sub(self.status_since.elapsed()));
+        }
         if ctx.input(|input| input.pointer.any_released()) {
             self.last_edit_field = None;
         }
@@ -335,8 +357,13 @@ impl PlutoApp {
             let dt = ctx.input(|i| i.stable_dt).min(0.1) as f64;
             self.playhead += dt;
             if self.playhead >= self.project_duration {
-                self.playhead = self.project_duration;
-                self.playing = false;
+                if self.loop_playback && self.project_duration > 0.0 {
+                    self.playhead = 0.0;
+                    self.preview_request = None;
+                } else {
+                    self.playhead = self.project_duration;
+                    self.playing = false;
+                }
             }
             ctx.request_repaint();
         }
@@ -1268,7 +1295,7 @@ impl PlutoApp {
                     || value.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
                     return Err("Unsupported Pluto project format or version".to_owned());
                 }
-                let name = value.get("name").and_then(serde_json::Value::as_str).unwrap_or("Untitled project").to_owned();
+                let name = value.get("name").and_then(serde_json::Value::as_str).unwrap_or("Untitled Project").to_owned();
                 let fps = value.get("fps").and_then(serde_json::Value::as_f64).filter(|fps| fps.is_finite() && *fps > 0.0).unwrap_or(30.0);
                 let timeline: Timeline = serde_json::from_value(value.get("timeline").cloned().ok_or("Project has no timeline")?)
                     .map_err(|error| error.to_string())?;
@@ -1615,14 +1642,16 @@ impl PlutoApp {
         let y0 = full.min.y + theme::ROW_TOP + theme::GAP;
         let y_bottom = full.max.y - theme::PAD_BOTTOM;
 
-        let tl_h = theme::ROW_TIMELINE
+        let compact = full.width() <= 850.0;
+        let timeline_height = if compact { 260.0 } else { theme::ROW_TIMELINE };
+        let tl_h = timeline_height
             .min(((y_bottom - y0).max(0.0)) * 0.6)
             .max(0.0);
         let mid_h = (y_bottom - y0 - theme::GAP - tl_h).max(0.0);
 
         let narrow = full.width() <= theme::MEDIA_BREAKPOINT;
         let media_w = if narrow { 0.0 } else { theme::COL_MEDIA };
-        let inspector_w = if narrow { 400.0 } else { theme::COL_INSPECTOR };
+        let inspector_w = if compact { 300.0 } else if narrow { 400.0 } else { theme::COL_INSPECTOR };
 
         let mut left = x0;
         if !narrow {
@@ -1650,6 +1679,17 @@ impl PlutoApp {
             Vec2::new(x1 - x0, tl_h),
         );
         self.timeline(ui, timeline);
+
+        if let Some(status) = self.status.as_deref() {
+            let toast_w = (status.chars().count() as f32 * 7.0 + 32.0).clamp(180.0, (full.width() - 32.0).max(180.0).min(560.0));
+            let toast = Rect::from_center_size(
+                Pos2::new(full.center().x, y0 + 18.0),
+                Vec2::new(toast_w, 34.0),
+            );
+            painter.rect_filled(toast, CornerRadius::same(10), theme::FIELD);
+            painter.rect_stroke(toast, CornerRadius::same(10), Stroke::new(1.0, theme::HAIRLINE), StrokeKind::Inside);
+            painter.text(toast.center(), Align2::CENTER_CENTER, truncate(status, 72), theme::font(theme::FONT_SMALL), theme::TEXT);
+        }
     }
 
     // -- top bar ------------------------------------------------------------
@@ -1772,14 +1812,9 @@ impl PlutoApp {
             self.start_or_cancel_export();
         }
 
-        // `.ed-top__actions` — 38×38 icon buttons, 3px gap.
+        // `.ed-top__actions` — only the history actions live in the header.
         right -= 8.0;
-        let actions = [
-            ("undo", "Undo"),
-            ("redo", "Redo"),
-            ("keyAdd", "Add keyframe"),
-            ("grid", "Guides"),
-        ];
+        let actions = [("undo", "Undo"), ("redo", "Redo")];
         for (idx, (icon, label)) in actions.iter().enumerate().rev() {
             let b = Rect::from_center_size(
                 Pos2::new(right - 19.0, mid_y),
@@ -1791,18 +1826,16 @@ impl PlutoApp {
                 match idx {
                     0 => self.undo_timeline(),
                     1 => self.redo_timeline(),
-                    2 => self.toggle_keyframe(),
-                    3 => self.show_guides = !self.show_guides,
                     _ => {}
                 }
             }
             right = b.min.x - 3.0;
         }
 
-        // `.ed-name` — 220×38
+        // `.ed-name` follows the brand at the left, as in the browser editor.
         let name_w = 220.0;
         let name_rect = Rect::from_center_size(
-            Pos2::new(right - name_w * 0.5, mid_y),
+            Pos2::new(brand.max.x + 12.0 + name_w * 0.5, mid_y),
             Vec2::new(name_w, 38.0),
         );
         let name_resp = ui.interact(name_rect, egui::Id::new("ed-name"), Sense::click());
@@ -1823,13 +1856,10 @@ impl PlutoApp {
                 theme::TEXT,
             );
         }
-        right = name_rect.min.x;
-
-        // `.ed-top__drag` — everything between the brand and the name field
-        // drags the window.
+        // `.ed-top__drag` — the flexible space after the project name.
         let drag = Rect::from_min_max(
-            Pos2::new(brand.max.x + 12.0, rect.min.y),
-            Pos2::new((right - 12.0).max(brand.max.x + 36.0), rect.max.y),
+            Pos2::new(name_rect.max.x + 12.0, rect.min.y),
+            Pos2::new((right - 12.0).max(name_rect.max.x + 12.0), rect.max.y),
         );
         let drag_resp = ui.interact(drag, egui::Id::new("ed-drag"), Sense::drag());
         if drag_resp.drag_started() {
@@ -1986,7 +2016,7 @@ impl PlutoApp {
         let filter = self.media_search.to_lowercase();
         let indices: Vec<usize> = self.media.iter().enumerate()
             .filter(|(_, item)| item.name.to_lowercase().contains(&filter))
-            .filter(|(_, item)| !self.show_audio_library || item.kind == Kind::Audio)
+            .filter(|(_, item)| if self.show_audio_library { item.kind == Kind::Audio } else { item.kind == Kind::Video })
             .map(|(i, _)| i).collect();
         let gap = 8.0;
         let cell_w = (list.width() - gap) * 0.5;
@@ -2006,7 +2036,18 @@ impl PlutoApp {
             let thumb = Rect::from_min_size(cell.min, Vec2::new(cell.width(), 72.0));
             clip.rect_filled(cell, CornerRadius::same(12), theme::FIELD);
             if let Some(texture) = &item.thumbnail {
-                clip.image(texture.id(), thumb.shrink(2.0), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                let target = thumb.shrink(2.0);
+                let image_size = texture.size_vec2();
+                let source_aspect = image_size.x / image_size.y.max(1.0);
+                let target_aspect = target.width() / target.height().max(1.0);
+                let uv = if source_aspect > target_aspect {
+                    let crop = (1.0 - target_aspect / source_aspect) * 0.5;
+                    Rect::from_min_max(Pos2::new(crop, 0.0), Pos2::new(1.0 - crop, 1.0))
+                } else {
+                    let crop = (1.0 - source_aspect / target_aspect) * 0.5;
+                    Rect::from_min_max(Pos2::new(0.0, crop), Pos2::new(1.0, 1.0 - crop))
+                };
+                clip.image(texture.id(), target, uv, Color32::WHITE);
             } else {
                 clip.rect_filled(thumb.shrink(2.0), CornerRadius::same(10), theme::CARD);
                 icons::draw_at(&clip, thumb.center(), 22.0, if item.kind == Kind::Audio { "music" } else { "video" }, theme::MUTED);
@@ -2028,10 +2069,6 @@ impl PlutoApp {
             let empty_y = list.min.y + 32.0;
             icons::draw_at(&clip, Pos2::new(list.center().x, empty_y), 24.0, "upload", theme::MUTED);
             clip.text(Pos2::new(list.center().x, empty_y + 26.0), Align2::CENTER_TOP, if self.media.is_empty() { "Import media to get started" } else { "No matching media" }, theme::font(theme::FONT_SMALL), theme::MUTED);
-        }
-        if let Some(error) = &self.status {
-            let status_rect = Rect::from_min_size(Pos2::new(list.min.x, list.max.y - 32.0), Vec2::new(list.width(), 28.0));
-            clip.text(status_rect.min, Align2::LEFT_TOP, truncate(error, 34), theme::font(theme::FONT_TINY), theme::RED);
         }
     }
 
@@ -2231,34 +2268,17 @@ impl PlutoApp {
             self.playhead = (self.playhead + 1.0 / self.fps.max(1.0)).min(self.project_duration);
         }
 
-        // Right: zoom.
-        let zoom_rect = Rect::from_center_size(
-            Pos2::new(bar.max.x - 16.0 - 19.0, mid_y),
-            Vec2::splat(38.0),
-        );
-        if self
-            .icon_button(ui, &painter, zoom_rect, "tr-zoomin", "zoomIn", 20.0, theme::MUTED)
-            .clicked()
-        {
-            self.zoom = (self.zoom * 1.25).min(8.0);
-        }
-        let zoom_out = Rect::from_center_size(
-            Pos2::new(zoom_rect.min.x - 3.0 - 38.0 - 3.0 - 19.0, mid_y),
-            Vec2::splat(38.0),
-        );
-        if self
-            .icon_button(ui, &painter, zoom_out, "tr-zoomout", "zoomOut", 20.0, theme::MUTED)
-            .clicked()
-        {
-            self.zoom = (self.zoom / 1.25).max(0.25);
-        }
-        painter.text(
-            Pos2::new(zoom_rect.min.x - 3.0 - 38.0, mid_y),
-            Align2::RIGHT_CENTER,
-            format!("{:.0}%", self.zoom * 100.0),
-            theme::font(theme::FONT_SMALL),
-            theme::MUTED,
-        );
+        // Right: project dimensions, loop, and preview guides.
+        let guides_rect = Rect::from_center_size(Pos2::new(bar.max.x - 16.0 - 19.0, mid_y), Vec2::splat(38.0));
+        let guides = self.icon_button(ui, &painter, guides_rect, "tr-guides", "grid", 20.0, if self.show_guides { theme::BLUE } else { theme::MUTED });
+        if guides.on_hover_text("Guides").clicked() { self.show_guides = !self.show_guides; }
+        let loop_rect = Rect::from_center_size(Pos2::new(guides_rect.min.x - 3.0 - 19.0, mid_y), Vec2::splat(38.0));
+        let loop_button = self.icon_button(ui, &painter, loop_rect, "tr-loop", "repeat", 20.0, if self.loop_playback { theme::BLUE } else { theme::MUTED });
+        if loop_button.on_hover_text("Loop").clicked() { self.loop_playback = !self.loop_playback; }
+        let dimensions = format!("{}×{} · {:.0} fps", self.export_settings.width, self.export_settings.height, self.fps);
+        let chip = Rect::from_min_size(Pos2::new(loop_rect.min.x - 124.0, mid_y - 13.0), Vec2::new(116.0, 26.0));
+        painter.rect_filled(chip, CornerRadius::same(8), theme::FIELD);
+        painter.text(chip.center(), Align2::CENTER_CENTER, dimensions, theme::font(theme::FONT_TINY), theme::MUTED);
     }
 
     fn preview_thumbnail(&self) -> Option<&egui::TextureHandle> {
@@ -2321,7 +2341,11 @@ impl PlutoApp {
                 let selected_kind = self.selected_clip.as_deref()
                     .and_then(|id| self.timeline.clips().iter().find(|clip| clip.id == id));
                 let audio_only = selected_kind.is_some_and(|clip| !clip.track.is_video());
-                let video_has_audio = selected_kind.is_some_and(|clip| clip.track.is_video() && clip.extra.get("hasAudio").and_then(serde_json::Value::as_bool) == Some(true));
+                let video_has_audio = selected_kind.is_some_and(|clip| {
+                    clip.track.is_video()
+                        && clip.linked_clip_id.is_none()
+                        && clip.extra.get("hasAudio").and_then(serde_json::Value::as_bool) == Some(true)
+                });
                 match tab {
                     InspectorTab::Transform if audio_only => self.draw_audio_controls(ui),
                     InspectorTab::Transform => {
@@ -2864,12 +2888,12 @@ impl PlutoApp {
             let base = if is_audio { Color32::from_rgb(32, 76, 64) } else { Color32::from_rgb(49, 123, 161) };
             painter.rect_filled(clip_rect, CornerRadius::same(8), base);
             painter.rect_stroke(clip_rect, CornerRadius::same(8), Stroke::new(if selected { 1.5 } else { 1.0 }, if selected { theme::SELECT_RING } else { theme::BORDER }), StrokeKind::Inside);
-            icons::draw_at(&painter, Pos2::new(clip_rect.min.x + 14.0, clip_rect.center().y - 5.0), 13.0, if is_audio { "music" } else { "film" }, theme::TEXT);
-            painter.text(Pos2::new(clip_rect.min.x + 25.0, clip_rect.center().y - 5.0), Align2::LEFT_CENTER, truncate(&clip.label, ((clip_rect.width() / 7.0).max(4.0)) as usize), theme::bold(theme::FONT_TINY), theme::TEXT);
+            icons::draw_at(&painter, Pos2::new(clip_rect.min.x + 14.0, clip_rect.min.y + 12.0), 13.0, if is_audio { "music" } else { "film" }, theme::TEXT);
+            painter.text(Pos2::new(clip_rect.min.x + 25.0, clip_rect.min.y + 12.0), Align2::LEFT_CENTER, truncate(&clip.label, ((clip_rect.width() / 7.0).max(4.0)) as usize), theme::bold(theme::FONT_TINY), theme::TEXT);
             let detached_audio = clip.extra.get("audioDetached").and_then(serde_json::Value::as_bool) == Some(true);
             let show_waveform = is_audio || (clip.linked_clip_id.is_none() && !detached_audio);
             if let Some(waveform) = clip.extra.get("waveform").and_then(serde_json::Value::as_array).filter(|waveform| !waveform.is_empty() && show_waveform) {
-                let wave_y = clip_rect.center().y + 9.0;
+                let wave_y = clip_rect.min.y + 34.0;
                 let count = ((clip_rect.width() / 3.5).max(0.0) as usize).min(512);
                 let source_duration = clip.extra.get("sourceDuration").and_then(serde_json::Value::as_f64).unwrap_or(clip.duration).max(0.001);
                 let source_offset = clip.extra.get("sourceOffset").and_then(serde_json::Value::as_f64).unwrap_or(0.0).max(0.0);
@@ -2879,7 +2903,7 @@ impl PlutoApp {
                     let x = clip_rect.min.x + 7.0 + sample as f32 * 3.5;
                     if x >= clip_rect.max.x - 5.0 { break; }
                     let source_index = first + sample.saturating_mul(span) / count.max(1);
-                    let h = waveform.get(source_index.min(waveform.len() - 1)).and_then(serde_json::Value::as_f64).unwrap_or(0.0) as f32 * 18.0;
+                    let h = waveform.get(source_index.min(waveform.len() - 1)).and_then(serde_json::Value::as_f64).unwrap_or(0.0) as f32 * 14.0;
                     if h <= 0.5 { continue; }
                     painter.line_segment([Pos2::new(x, wave_y - h * 0.5), Pos2::new(x, wave_y + h * 0.5)], Stroke::new(1.3, Color32::from_rgb(205, 229, 216)));
                 }
@@ -3155,7 +3179,7 @@ fn start_preview_worker(ctx: egui::Context) -> (Sender<PreviewCommand>, Receiver
                 PreviewCommand::Stop => pending = command_rx.recv().ok(),
                 PreviewCommand::Decode { request_id, path, source_time, continuous, loop_image, filter_graph } => {
                     let time = format!("{:.5}", source_time.max(0.0));
-                    let mut ffmpeg = Command::new(media_tool("ffmpeg"));
+                    let mut ffmpeg = multimedia_command("ffmpeg");
                     ffmpeg.args(["-hide_banner", "-loglevel", "error"]);
                     if loop_image { ffmpeg.args(["-loop", "1", "-framerate", "30"]); }
                     if continuous { ffmpeg.arg("-re"); }
@@ -3163,7 +3187,10 @@ fn start_preview_worker(ctx: egui::Context) -> (Sender<PreviewCommand>, Receiver
                         .args(["-filter_complex"]).arg(filter_graph)
                         .args(["-map", "[out]", "-an", "-f", "rawvideo", "-pix_fmt", "rgba"]);
                     if !continuous { ffmpeg.args(["-frames:v", "1"]); }
-                    ffmpeg.args(["pipe:1"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+                    ffmpeg.args(["pipe:1"])
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::null());
 
                     let Ok(mut child) = ffmpeg.spawn() else {
                         pending = command_rx.recv().ok();
@@ -3306,7 +3333,7 @@ fn load_media_item(id: u64, path: PathBuf) -> Result<RawMediaItem, String> {
     let (duration, has_audio) = if is_still {
         (5.0, false)
     } else {
-        let probe = Command::new(media_tool("ffprobe"))
+        let probe = multimedia_command("ffprobe")
             .args(["-v", "error", "-show_entries", "format=duration:stream=codec_type,duration", "-of", "json"])
             .arg(&path)
             .output()
@@ -3330,7 +3357,7 @@ fn load_media_item(id: u64, path: PathBuf) -> Result<RawMediaItem, String> {
     let thumbnail_png = if kind == Kind::Audio {
         None
     } else if is_still {
-        let output = Command::new(media_tool("ffmpeg"))
+        let output = multimedia_command("ffmpeg")
             .args(["-v", "error", "-i"])
             .arg(&path)
             .args(["-frames:v", "1", "-vf", "scale=480:270:force_original_aspect_ratio=decrease", "-f", "image2pipe", "-vcodec", "png", "pipe:1"])
@@ -3338,7 +3365,7 @@ fn load_media_item(id: u64, path: PathBuf) -> Result<RawMediaItem, String> {
             .map_err(|error| format!("Could not start FFmpeg to create an image thumbnail: {error}"))?;
         output.status.success().then_some(output.stdout)
     } else {
-        let output = Command::new(media_tool("ffmpeg"))
+        let output = multimedia_command("ffmpeg")
             .args(["-v", "error", "-ss", "0.25", "-i"])
             .arg(&path)
             .args(["-frames:v", "1", "-vf", "scale=480:-2", "-f", "image2pipe", "-vcodec", "png", "pipe:1"])
@@ -3353,7 +3380,7 @@ fn load_media_item(id: u64, path: PathBuf) -> Result<RawMediaItem, String> {
     // showwavespic decodes the full audio stream into a small fixed-size image,
     // so long files never create an unbounded PCM buffer in the UI process.
     let waveform = if has_audio {
-        let output = Command::new(media_tool("ffmpeg"))
+        let output = multimedia_command("ffmpeg")
             .args(["-v", "error", "-i"])
             .arg(&path)
             .args([
@@ -3405,6 +3432,17 @@ fn media_tool(name: &str) -> PathBuf {
         }
     }
     PathBuf::from(exe)
+}
+
+fn multimedia_command(name: &str) -> Command {
+    let mut command = Command::new(media_tool(name));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
 }
 
 fn truncate(value: &str, max_chars: usize) -> String {

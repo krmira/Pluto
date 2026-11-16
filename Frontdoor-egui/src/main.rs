@@ -46,7 +46,7 @@ fn main() -> eframe::Result<()> {
             .with_app_id("pluto")
             .with_visible(true)
             .with_inner_size([1440.0, 900.0])
-            .with_min_inner_size([1000.0, 640.0])
+            .with_min_inner_size([800.0, 600.0])
             // The web frontend draws its own title bar (`.ed-top`) and its own
             // min/max/close buttons, so the OS decorations are switched off to
             // keep the layout identical.
