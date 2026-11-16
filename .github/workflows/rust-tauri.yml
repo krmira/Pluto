@@ -24,6 +24,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Restore cached Windows FFmpeg tools
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/pluto-ffmpeg
+          key: ffmpeg-windows-x64-essentials-v1
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-gnu
@@ -43,6 +49,15 @@ jobs:
           curl -L -o /tmp/raylib.tar.gz https://github.com/raysan5/raylib/releases/download/5.5/raylib-5.5_minimal_w64-mingw.tar.gz
           mkdir -p /tmp/raylib
           tar -xzf /tmp/raylib.tar.gz -C /tmp/raylib --strip-components=1
+      - name: Download and cache FFmpeg when needed
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p /tmp/pluto-ffmpeg /tmp/ffmpeg-extract
+          curl -L --fail -o /tmp/ffmpeg.zip https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
+          unzip -q /tmp/ffmpeg.zip -d /tmp/ffmpeg-extract
+          find /tmp/ffmpeg-extract -type f \( -name ffmpeg.exe -o -name ffprobe.exe \) -exec cp {} /tmp/pluto-ffmpeg/ \;
+          test -f /tmp/pluto-ffmpeg/ffmpeg.exe
+          test -f /tmp/pluto-ffmpeg/ffprobe.exe
       - name: Build native C frontend
         shell: bash
         run: |
@@ -57,12 +72,13 @@ jobs:
           mkdir -p dist/Pluto
           cp pluto.exe dist/Pluto/Pluto.exe
           cp Backdoor/target/x86_64-pc-windows-gnu/release/pluto_frontdoor_ffi.dll dist/Pluto/
+          mkdir -p dist/Pluto/ffmpeg
+          cp /tmp/pluto-ffmpeg/ffmpeg.exe /tmp/pluto-ffmpeg/ffprobe.exe dist/Pluto/ffmpeg/
           cat > dist/Pluto/README.txt <<'EOF'
           Pluto native Windows preview
 
           Run Pluto.exe. Keep pluto_frontdoor_ffi.dll beside it.
-          FFmpeg and ffprobe must be installed and available on PATH for media
-          import, preview generation, and export.
+          FFmpeg and ffprobe are included in the ffmpeg folder.
           EOF
           cd dist
           zip -r Pluto-Native-Windows.zip Pluto

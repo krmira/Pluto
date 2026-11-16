@@ -801,7 +801,7 @@ pub fn render_timeline(
         ));
         base = next;
     }
-    let _temp_files: Option<ExportTempFiles> = None;
+    let mut temp_files: Option<ExportTempFiles> = None;
     if !titles.is_empty() || clips.iter().any(|clip| clip["props"]["text"]["caption"].as_str().map(|text| !text.is_empty()).unwrap_or(false)) {
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
         let temp_root = std::env::temp_dir().join(format!("pluto-export-{}-{nonce}", std::process::id()));
