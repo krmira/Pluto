@@ -67,7 +67,7 @@ jobs:
       - name: Build native C frontend
         shell: bash
         run: |
-          gcc -std=c11 -O2 -Wall -Wextra -Wno-unused-parameter \
+          x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -Wno-unused-parameter \
             -I"/tmp/raylib/include" -I"New Frontdoor" \
             "New Frontdoor/pluto_interface.c" "New Frontdoor/pluto_bridge.c" "New Frontdoor/pluto_platform.c" \
             -L"/tmp/raylib/lib" -lraylib -lopengl32 -lgdi32 -lwinmm -lcomdlg32 \
