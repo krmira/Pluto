@@ -190,6 +190,8 @@ pub struct PlutoApp {
     selected_keyframes: HashSet<(String, i64)>,
     keyframe_drag: Option<KeyframeDrag>,
     inspector_tab: InspectorTab,
+    inspector_open_section: Option<String>,
+    inspector_hsl_channel: String,
     last_edit_field: Option<String>,
     dragging_media: Option<u64>,
     timeline_content: Rect,
@@ -285,6 +287,8 @@ impl PlutoApp {
             selected_keyframes: HashSet::new(),
             keyframe_drag: None,
             inspector_tab: InspectorTab::Transform,
+            inspector_open_section: None,
+            inspector_hsl_channel: "all".to_owned(),
             last_edit_field: None,
             dragging_media: None,
             timeline_content: Rect::NOTHING,
@@ -2296,11 +2300,7 @@ impl PlutoApp {
         theme::card(&painter, rect);
 
         let inner = rect.shrink2(Vec2::new(12.0, 12.0));
-        let head = Rect::from_min_size(inner.min, Vec2::new(inner.width(), 38.0));
-        icons::draw_at(&painter, Pos2::new(head.min.x + 18.0, head.center().y), 22.0, "crop", theme::MUTED);
-        painter.text(Pos2::new(head.min.x + 38.0, head.center().y), Align2::LEFT_CENTER, "Inspector", theme::bold(theme::FONT_CARD_HEAD), theme::TEXT);
-
-        let tabs = Rect::from_min_size(Pos2::new(inner.min.x, head.max.y + 4.0), Vec2::new(inner.width(), 42.0));
+        let tabs = Rect::from_min_size(inner.min, Vec2::new(inner.width(), 42.0));
         painter.rect_filled(tabs, CornerRadius::same(14), theme::TRACK);
         let tab_width = (tabs.width() - 8.0) / 4.0;
         let definitions = [
@@ -2311,12 +2311,16 @@ impl PlutoApp {
         ];
         for (index, (tab, label)) in definitions.into_iter().enumerate() {
             let tab_rect = Rect::from_min_size(Pos2::new(tabs.min.x + 4.0 + index as f32 * tab_width, tabs.min.y + 4.0), Vec2::new(tab_width, tabs.height() - 8.0));
-            if self.inspector_tab == tab { painter.rect_filled(tab_rect, CornerRadius::same(11), theme::TOOL_ACTIVE); }
-            painter.text(tab_rect.center(), Align2::CENTER_CENTER, label, theme::font(theme::FONT_TINY), if self.inspector_tab == tab { theme::TEXT } else { theme::MUTED });
-            if ui.interact(tab_rect, egui::Id::new(("inspector-tab", index)), Sense::click()).clicked() { self.inspector_tab = tab; }
+            let selected = self.inspector_tab == tab;
+            let progress = ui.ctx().animate_bool_with_time(egui::Id::new(("inspector-tab-anim", index)), selected, 0.18);
+            if progress > 0.01 { painter.rect_filled(tab_rect, CornerRadius::same(11), inspector_mix(theme::TRACK, theme::TOOL_ACTIVE, progress)); }
+            let response = ui.interact(tab_rect, egui::Id::new(("inspector-tab", index)), Sense::click());
+            if response.hovered() && !selected { painter.rect_filled(tab_rect, CornerRadius::same(11), theme::HOVER); }
+            painter.text(tab_rect.center(), Align2::CENTER_CENTER, label, theme::font(theme::FONT_TINY), inspector_mix(theme::MUTED, theme::TEXT, progress));
+            if response.clicked() { self.inspector_tab = tab; }
         }
 
-        let content = Rect::from_min_max(Pos2::new(inner.min.x, tabs.max.y + 10.0), inner.max);
+        let content = Rect::from_min_max(Pos2::new(inner.min.x, tabs.max.y + 8.0), inner.max);
         let tab = self.inspector_tab;
         ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| {
             ui.set_clip_rect(content);
@@ -2364,105 +2368,520 @@ impl PlutoApp {
     }
 
     fn draw_transform_controls(&mut self, ui: &mut Ui) {
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Position").strong().color(theme::TEXT));
-            if ui.small_button("Reset").clicked() { self.reset_transform_group("position"); }
-        });
-        self.draw_number_row(ui, "X", &["transform", "position", "x"], 0.0, " px");
-        self.draw_number_row(ui, "Y", &["transform", "position", "y"], 0.0, " px");
+        egui::Frame::new()
+            .fill(theme::CARD)
+            .stroke(Stroke::new(1.0, theme::BORDER))
+            .corner_radius(CornerRadius::same(20))
+            .inner_margin(egui::Margin::same(12))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    icons::draw_at(ui.painter(), ui.cursor().min + Vec2::new(12.0, 12.0), 22.0, "crop", theme::MUTED);
+                    ui.add_space(28.0);
+                    ui.label(egui::RichText::new("Transform").font(theme::bold(18.0)).color(theme::TEXT));
+                });
+                ui.add_space(10.0);
+                ui.columns(2, |columns| {
+                    self.draw_pair_card(&mut columns[0], "Position", "position", "x", "y", "px", false);
+                    self.draw_pair_card(&mut columns[1], "Scale", "scale", "w", "h", "%", true);
+                });
+                ui.add_space(8.0);
+                self.draw_rotation_card(ui);
+                ui.add_space(8.0);
+                self.draw_inspector_slider(ui, "Opacity", &["transform", "opacity"], 0.0, 100.0, 100.0, "%");
+                ui.add_space(8.0);
+                let drawer_button_width = (ui.available_width() - ui.spacing().item_spacing.x) * 0.5;
+                ui.horizontal(|ui| {
+                    self.draw_inspector_section_button(ui, drawer_button_width, "crop", "Crop Tools", "crop");
+                    self.draw_inspector_section_button(ui, drawer_button_width, "distort", "Distort", "distort");
+                });
+                let drawer = self.inspector_open_section.as_deref().is_some_and(|s| s == "crop" || s == "distort");
+                if drawer {
+                    ui.add_space(8.0);
+                    egui::Frame::new().fill(theme::CARD_BOTTOM).stroke(Stroke::new(1.0, theme::BORDER))
+                        .corner_radius(CornerRadius::same(16)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+                            if self.inspector_open_section.as_deref() == Some("crop") { self.draw_crop_quad(ui); }
+                            else { self.draw_distort_quad(ui); }
+                        });
+                }
+            });
+    }
 
-        ui.add_space(10.0);
+    fn draw_pair_card(&mut self, ui: &mut Ui, title: &str, group: &str, first: &str, second: &str, unit: &str, scale: bool) {
+        egui::Frame::new().fill(theme::CARD_BOTTOM).stroke(Stroke::new(1.0, theme::BORDER))
+            .corner_radius(CornerRadius::same(16)).inner_margin(egui::Margin::same(9)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    icons::draw_at(ui.painter(), ui.cursor().min + Vec2::new(11.0, 10.0), 18.0, if scale { "scale" } else { "position" }, theme::MUTED);
+                    ui.add_space(22.0);
+                    ui.label(egui::RichText::new(title).strong().color(theme::TEXT));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let reset = ui.add_sized([20.0, 22.0], egui::Button::new(egui::RichText::new("↶").color(theme::MUTED)).fill(Color32::TRANSPARENT));
+                        if reset.on_hover_text(format!("Reset {title}")).clicked() { self.reset_transform_group(group); }
+                    });
+                });
+                ui.add_space(4.0);
+                self.draw_compact_value(ui, first.to_uppercase().as_str(), group, first, unit, scale);
+                ui.add_space(5.0);
+                self.draw_compact_value(ui, second.to_uppercase().as_str(), group, second, unit, scale);
+                if scale || group == "position" {
+                    let path = ["transform", group, "linked"];
+                    ui.horizontal_centered(|ui| self.draw_link_toggle(ui, &path, scale));
+                }
+            });
+    }
+
+    fn draw_compact_value(&mut self, ui: &mut Ui, label: &str, group: &str, key: &str, unit: &str, scale: bool) {
+        let path = ["transform", group, key];
+        let default = if scale { 100.0 } else { 0.0 };
+        let mut value = self.property_number(&path, default);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Scale").strong().color(theme::TEXT));
-            if ui.small_button("Reset").clicked() { self.reset_transform_group("scale"); }
-            let mut linked = self.property_bool(&["transform", "scale", "linked"], true);
-            if ui.checkbox(&mut linked, "Link").changed() {
-                self.set_property_value(&["transform", "scale", "linked"], serde_json::json!(linked));
+            ui.label(egui::RichText::new(label).color(theme::MUTED));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let field = egui::DragValue::new(&mut value).speed(if scale { 0.5 } else { 1.0 }).suffix(format!(" {unit}"));
+                let response = ui.add_sized([82.0, 28.0], field);
+                if response.changed() {
+                    if scale {
+                        self.set_scale_axis(key, value);
+                    } else {
+                        self.set_number(&path, value);
+                        if group == "position" && self.property_bool(&["transform", "position", "linked"], false) {
+                            let other = if key == "x" { "y" } else { "x" };
+                            self.set_number(&["transform", "position", other], value);
+                        }
+                    }
+                }
+            });
+        });
+    }
+
+    fn draw_inspector_section_button(&mut self, ui: &mut Ui, width: f32, key: &str, label: &str, icon: &str) {
+        let open = self.inspector_open_section.as_deref() == Some(key);
+        let progress = ui.ctx().animate_bool_with_time(egui::Id::new(("inspector-drawer", key)), open, 0.24);
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 42.0), Sense::click());
+        let painter = ui.painter();
+        painter.rect_filled(rect, CornerRadius::same(15), inspector_mix(theme::CARD_BOTTOM, theme::TOOL_ACTIVE, progress));
+        painter.rect_stroke(rect, CornerRadius::same(15), Stroke::new(1.0, theme::BORDER), StrokeKind::Inside);
+        icons::draw_at(painter, rect.min + Vec2::new(18.0, 21.0), 20.0, icon, theme::MUTED);
+        painter.text(Pos2::new(rect.min.x + 38.0, rect.center().y), Align2::LEFT_CENTER, label, theme::font(13.0), theme::TEXT);
+        icons::draw_at(painter, Pos2::new(rect.max.x - 18.0, rect.center().y), 17.0, if open { "chevDown" } else { "chevRight" }, theme::MUTED);
+        if response.clicked() { self.inspector_open_section = if open { None } else { Some(key.to_owned()) }; }
+    }
+
+    fn draw_link_toggle(&mut self, ui: &mut Ui, path: &[&str], default: bool) {
+        let linked = self.property_bool(path, default);
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(30.0, 25.0), Sense::click());
+        ui.painter().rect_filled(rect, CornerRadius::same(8), if linked { theme::BLUE_SOFT } else { Color32::TRANSPARENT });
+        icons::draw_at(ui.painter(), rect.center(), 18.0, "link", if linked { theme::BLUE } else { theme::MUTED });
+        if response.clicked() { self.set_property_value(path, serde_json::json!(!linked)); }
+    }
+
+    fn draw_rotation_card(&mut self, ui: &mut Ui) {
+        egui::Frame::new().fill(theme::CARD_BOTTOM).stroke(Stroke::new(1.0, theme::BORDER))
+            .corner_radius(CornerRadius::same(16)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.add_sized([28.0, 28.0], egui::Button::new(egui::RichText::new("↶").color(theme::MUTED)).fill(Color32::TRANSPARENT)).on_hover_text("Reset rotation").clicked() {
+                        self.set_number(&["transform", "rotation"], 0.0);
+                    }
+                    ui.label(egui::RichText::new("Rotation").color(theme::TEXT));
+                    let mut value = self.property_number(&["transform", "rotation"], 0.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let field = ui.add_sized([76.0, 28.0], egui::DragValue::new(&mut value).speed(0.5).suffix("°"));
+                        if field.changed() { self.set_number(&["transform", "rotation"], value); }
+                    });
+                });
+                ui.add_space(5.0);
+                let value = self.property_number(&["transform", "rotation"], 0.0) as f32;
+                let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 62.0), Sense::click_and_drag());
+                let painter = ui.painter();
+                painter.rect_filled(rect, CornerRadius::same(12), theme::TRACK);
+                let inner = rect.shrink2(Vec2::new(12.0, 8.0));
+                for i in 0..=36 {
+                    let x = egui::lerp(inner.x_range(), i as f32 / 36.0);
+                    let major = i % 9 == 0;
+                    let y1 = inner.top() + if major { 2.0 } else if i % 3 == 0 { 7.0 } else { 11.0 };
+                    painter.line_segment([Pos2::new(x, y1), Pos2::new(x, inner.top() + 25.0)], Stroke::new(if major { 1.5 } else { 1.0 }, if major { theme::MUTED } else { theme::HAIRLINE }));
+                }
+                for (i, label) in ["-180°", "-90°", "0°", "90°", "180°"].into_iter().enumerate() {
+                    let x = egui::lerp(inner.x_range(), i as f32 / 4.0);
+                    painter.text(Pos2::new(x, inner.bottom()), Align2::CENTER_BOTTOM, label, theme::font(9.0), theme::MUTED);
+                }
+                let percent = ((value + 180.0) / 360.0).clamp(0.0, 1.0);
+                let needle_x = egui::lerp(inner.x_range(), percent);
+                painter.rect_filled(Rect::from_center_size(Pos2::new(needle_x, inner.top() + 14.0), Vec2::new(3.0, 28.0)), CornerRadius::same(2), theme::RED);
+                painter.add(egui::Shape::convex_polygon(vec![Pos2::new(needle_x - 5.0, rect.bottom() - 2.0), Pos2::new(needle_x + 5.0, rect.bottom() - 2.0), Pos2::new(needle_x, rect.bottom() - 10.0)], theme::TEXT, Stroke::NONE));
+                if response.dragged() || response.clicked() {
+                    if let Some(pointer) = response.interact_pointer_pos() {
+                        let v = (((pointer.x - inner.left()) / inner.width().max(1.0)) * 360.0 - 180.0).clamp(-180.0, 180.0);
+                        self.set_number(&["transform", "rotation"], (v * 2.0).round() as f64 / 2.0);
+                    }
+                }
+            });
+    }
+
+    fn draw_inspector_slider(&mut self, ui: &mut Ui, label: &str, path: &[&str], min: f64, max: f64, default: f64, unit: &str) {
+        let mut value = self.property_number(path, default) as f32;
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(label).color(theme::TEXT));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let response = ui.add_sized([64.0, 26.0], egui::DragValue::new(&mut value).speed((max - min).abs() as f32 / 500.0).suffix(format!(" {unit}")));
+                if response.changed() { self.set_number(path, value as f64); }
+            });
+        });
+        let response = ui.add_sized([ui.available_width(), 12.0], egui::Slider::new(&mut value, min as f32..=max as f32).show_value(false));
+        if response.changed() { self.set_number(path, value as f64); }
+    }
+
+    fn draw_crop_quad(&mut self, ui: &mut Ui) {
+        ui.vertical_centered(|ui| self.draw_quad_value(ui, "T", "crop", "top", 0.0));
+        ui.horizontal(|ui| {
+            self.draw_quad_value(ui, "L", "crop", "left", 0.0);
+            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                self.draw_link_toggle(ui, &["transform", "crop", "linked"], false);
+            });
+            self.draw_quad_value(ui, "R", "crop", "right", 0.0);
+        });
+        ui.vertical_centered(|ui| self.draw_quad_value(ui, "B", "crop", "bottom", 0.0));
+    }
+
+    fn draw_distort_quad(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            self.draw_quad_value(ui, "TL", "distort", "tl", 0.0);
+            self.draw_quad_value(ui, "TR", "distort", "tr", 0.0);
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(ui.available_width() * 0.43);
+            self.draw_link_toggle(ui, &["transform", "distort", "linked"], false);
+        });
+        ui.horizontal(|ui| {
+            self.draw_quad_value(ui, "BL", "distort", "bl", 0.0);
+            self.draw_quad_value(ui, "BR", "distort", "br", 0.0);
+        });
+    }
+
+    fn draw_quad_value(&mut self, ui: &mut Ui, label: &str, group: &str, key: &str, default: f64) {
+        let path = ["transform", group, key];
+        let mut value = self.property_number(&path, default);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(label).small().color(theme::MUTED));
+            let response = ui.add_sized([62.0, 26.0], egui::DragValue::new(&mut value).speed(0.5).suffix(" px"));
+            if response.changed() {
+                self.set_number(&path, value);
+                if self.property_bool(&["transform", group, "linked"], false) {
+                    let pair = match (group, key) {
+                        ("crop", "top") => Some("bottom"), ("crop", "bottom") => Some("top"),
+                        ("crop", "left") => Some("right"), ("crop", "right") => Some("left"),
+                        ("distort", "tl") => Some("br"), ("distort", "br") => Some("tl"),
+                        ("distort", "tr") => Some("bl"), ("distort", "bl") => Some("tr"), _ => None,
+                    };
+                    if let Some(pair) = pair { self.set_number(&["transform", group, pair], value); }
+                }
             }
         });
-        self.draw_scale_row(ui, "W", "w");
-        self.draw_scale_row(ui, "H", "h");
-
-        ui.add_space(10.0);
-        self.draw_slider(ui, "Rotation", &["transform", "rotation"], -180.0, 180.0, 0.0, "°");
-        self.draw_slider(ui, "Opacity", &["transform", "opacity"], 0.0, 100.0, 100.0, "%");
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Crop").strong().color(theme::TEXT));
-        for axis in ["top", "right", "bottom", "left"] {
-            self.draw_slider(ui, axis, &["transform", "crop", axis], 0.0, 100.0, 0.0, " px");
-        }
     }
 
     fn draw_color_controls(&mut self, ui: &mut Ui) {
-        ui.add_space(6.0);
-        ui.label(egui::RichText::new("Light").strong().color(theme::TEXT));
-        for (label, key, min, max) in [("Exposure", "exposure", -5.0, 5.0), ("Brightness", "brightness", -100.0, 100.0), ("Contrast", "contrast", -100.0, 100.0)] {
-            self.draw_slider(ui, label, &["colors", "light", key], min, max, 0.0, "");
+        egui::Frame::new().fill(theme::CARD).stroke(Stroke::new(1.0, theme::BORDER))
+            .corner_radius(CornerRadius::same(20)).inner_margin(egui::Margin::same(12)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    icons::draw_at(ui.painter(), ui.cursor().min + Vec2::new(12.0, 12.0), 22.0, "palette", theme::MUTED);
+                    ui.add_space(28.0);
+                    ui.label(egui::RichText::new("Colors").font(theme::bold(18.0)).color(theme::TEXT));
+                });
+                ui.add_space(12.0);
+                for (key, label, icon) in [("grading", "Color Grading", "wheel"), ("hsl", "HSL", "sliders"), ("light", "Light", "sun"), ("color", "Color", "droplet"), ("detail", "Detail", "detail")] {
+                    self.draw_accordion_header(ui, key, label, icon);
+                    if self.inspector_open_section.as_deref() == Some(key) {
+                        ui.add_space(7.0);
+                        egui::Frame::new().fill(theme::CARD_BOTTOM).stroke(Stroke::new(1.0, theme::BORDER))
+                            .corner_radius(CornerRadius::same(16)).inner_margin(egui::Margin::same(11)).show(ui, |ui| {
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.small_button("Reset").clicked() { self.reset_color_section(key); }
+                                });
+                                match key {
+                                    "grading" => self.draw_color_grading(ui),
+                                    "hsl" => self.draw_hsl_controls(ui),
+                                    "light" => {
+                                        for (label, key, min, max) in [("Exposure", "exposure", -5.0, 5.0), ("Brightness", "brightness", -100.0, 100.0), ("Contrast", "contrast", -100.0, 100.0), ("Highlights", "highlights", -100.0, 100.0), ("Shadows", "shadows", -100.0, 100.0), ("Whites", "whites", -100.0, 100.0), ("Blacks", "blacks", -100.0, 100.0)] {
+                                            self.draw_inspector_slider(ui, label, &["colors", "light", key], min, max, 0.0, "");
+                                            ui.add_space(4.0);
+                                        }
+                                    }
+                                    "color" => for (label, key, min, max) in [("Temperature", "temperature", -100.0, 100.0), ("Vibrance", "vibrance", -100.0, 100.0), ("Saturation", "saturation", -100.0, 100.0)] {
+                                        self.draw_inspector_slider(ui, label, &["colors", "color", key], min, max, 0.0, "");
+                                    },
+                                    "detail" => for (label, key, min, max) in [("Sharpness", "sharpness", 0.0, 100.0), ("Clarity", "clarity", -100.0, 100.0), ("Vignette", "vignette", -100.0, 100.0)] {
+                                        self.draw_inspector_slider(ui, label, &["colors", "detail", key], min, max, 0.0, "");
+                                    },
+                                    _ => {}
+                                }
+                            });
+                        ui.add_space(7.0);
+                    }
+                    ui.add_space(7.0);
+                }
+            });
+    }
+
+    fn reset_color_section(&mut self, section: &str) {
+        let zero = serde_json::json!(0.0);
+        match section {
+            "grading" => for key in ["shadows", "mids", "highlights"] {
+                self.set_property_value(&["colors", "grading", key, "hue"], zero.clone());
+                self.set_property_value(&["colors", "grading", key, "amount"], zero.clone());
+            },
+            "hsl" => for key in ["h", "s", "l"] {
+                self.set_property_value(&["colors", "hsl", self.inspector_hsl_channel.as_str(), key], zero.clone());
+            },
+            "light" => for key in ["exposure", "brightness", "contrast", "highlights", "shadows", "whites", "blacks"] {
+                self.set_property_value(&["colors", "light", key], zero.clone());
+            },
+            "color" => for key in ["temperature", "vibrance", "saturation"] {
+                self.set_property_value(&["colors", "color", key], zero.clone());
+            },
+            "detail" => for key in ["sharpness", "clarity", "vignette"] {
+                self.set_property_value(&["colors", "detail", key], zero.clone());
+            },
+            _ => {}
         }
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new("Color").strong().color(theme::TEXT));
-        for (label, key, min, max) in [("Saturation", "saturation", -100.0, 100.0), ("Vibrance", "vibrance", -100.0, 100.0), ("Temperature", "temperature", -100.0, 100.0)] {
-            self.draw_slider(ui, label, &["colors", "color", key], min, max, 0.0, "");
+    }
+
+    fn draw_accordion_header(&mut self, ui: &mut Ui, key: &str, label: &str, icon: &str) {
+        let open = self.inspector_open_section.as_deref() == Some(key);
+        let progress = ui.ctx().animate_bool_with_time(egui::Id::new(("inspector-accordion", key)), open, 0.22);
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 44.0), Sense::click());
+        let painter = ui.painter();
+        let mut fill = inspector_mix(theme::CARD_BOTTOM, theme::TOOL_ACTIVE, progress);
+        if response.hovered() { fill = inspector_mix(fill, theme::HOVER, 0.65); }
+        painter.rect_filled(rect, CornerRadius::same(15), fill);
+        painter.rect_stroke(rect, CornerRadius::same(15), Stroke::new(1.0, theme::BORDER), StrokeKind::Inside);
+        icons::draw_at(painter, rect.min + Vec2::new(22.0, 22.0), 21.0, icon, theme::MUTED);
+        painter.text(Pos2::new(rect.min.x + 44.0, rect.center().y), Align2::LEFT_CENTER, label, theme::font(14.0), theme::TEXT);
+        painter.circle_stroke(Pos2::new(rect.max.x - 21.0, rect.center().y), 9.0, Stroke::new(1.0, theme::MUTED));
+        painter.text(Pos2::new(rect.max.x - 21.0, rect.center().y - 0.5), Align2::CENTER_CENTER, if open { "−" } else { "+" }, theme::font(14.0), theme::MUTED);
+        if response.clicked() { self.inspector_open_section = if open { None } else { Some(key.to_owned()) }; }
+    }
+
+    fn draw_color_grading(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            for (key, label) in [("shadows", "Shadows"), ("mids", "Tint"), ("highlights", "Highlights")] {
+                ui.vertical_centered(|ui| {
+                    self.draw_color_wheel(ui, key);
+                    ui.label(egui::RichText::new(label).small().color(theme::TEXT));
+                    let amount = self.property_number(&["colors", "grading", key, "amount"], 0.0);
+                    let status = if amount < 1.0 { "Neutral".to_owned() } else { format!("{amount:.0}%") };
+                    ui.label(egui::RichText::new(status).size(10.0).color(theme::MUTED));
+                });
+            }
+        });
+    }
+
+    fn draw_color_wheel(&mut self, ui: &mut Ui, key: &str) {
+        let (rect, response) = ui.allocate_exact_size(Vec2::splat(76.0), Sense::click_and_drag());
+        let painter = ui.painter();
+        let center = rect.center();
+        let radius = 36.0;
+        for i in 0..72 {
+            let a0 = std::f32::consts::TAU * i as f32 / 72.0;
+            let a1 = std::f32::consts::TAU * (i + 1) as f32 / 72.0;
+            let color = inspector_hsv(i as f32 / 72.0, 0.85, 0.58);
+            painter.add(egui::Shape::convex_polygon(vec![center,
+                center + Vec2::new(a0.cos(), a0.sin()) * radius,
+                center + Vec2::new(a1.cos(), a1.sin()) * radius], color, Stroke::NONE));
         }
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new("Detail").strong().color(theme::TEXT));
-        for (label, key, min, max) in [("Clarity", "clarity", -100.0, 100.0), ("Sharpness", "sharpness", 0.0, 100.0), ("Vignette", "vignette", -100.0, 100.0)] {
-            self.draw_slider(ui, label, &["colors", "detail", key], min, max, 0.0, "");
+        let hue = self.property_number(&["colors", "grading", key, "hue"], 0.0) as f32;
+        let amount = self.property_number(&["colors", "grading", key, "amount"], 0.0) as f32;
+        let angle = hue.to_radians();
+        let puck = center + Vec2::new(angle.cos(), angle.sin()) * (amount.clamp(0.0, 100.0) * 0.01 * radius);
+        painter.circle_filled(puck, 8.0, inspector_hsv(hue / 360.0, 0.85, 0.75));
+        painter.circle_stroke(puck, 7.0, Stroke::new(2.0, theme::TEXT));
+        if response.dragged() || response.clicked() {
+            if let Some(p) = response.interact_pointer_pos() {
+                let d = p - center;
+                let amount = (d.length() / radius).clamp(0.0, 1.0) * 100.0;
+                let hue = (d.y.atan2(d.x).to_degrees() + 360.0) % 360.0;
+                self.set_number(&["colors", "grading", key, "hue"], hue as f64);
+                self.set_number(&["colors", "grading", key, "amount"], amount as f64);
+            }
+        }
+    }
+
+    fn draw_hsl_controls(&mut self, ui: &mut Ui) {
+        ui.horizontal_wrapped(|ui| {
+            for (key, label, color) in [
+                ("all", "All", Color32::from_rgb(180, 180, 185)),
+                ("red", "Red", Color32::from_rgb(239, 68, 68)), ("orange", "Orange", Color32::from_rgb(249, 115, 22)),
+                ("yellow", "Yellow", Color32::from_rgb(234, 179, 8)), ("green", "Green", Color32::from_rgb(34, 197, 94)),
+                ("aqua", "Aqua", Color32::from_rgb(6, 182, 212)), ("blue", "Blue", Color32::from_rgb(59, 130, 246)),
+                ("purple", "Purple", Color32::from_rgb(139, 92, 246)), ("magenta", "Magenta", Color32::from_rgb(236, 72, 153)),
+            ] {
+                let selected = self.inspector_hsl_channel == key;
+                let (rect, response) = ui.allocate_exact_size(Vec2::splat(25.0), Sense::click());
+                if key == "all" {
+                    ui.painter().circle_filled(rect.center(), 10.0, inspector_hsv(0.0, 0.0, 0.45));
+                    for i in 0..12 {
+                        let angle = std::f32::consts::TAU * i as f32 / 12.0;
+                        ui.painter().circle_filled(rect.center() + Vec2::new(angle.cos(), angle.sin()) * 7.0, 4.0, inspector_hsv(i as f32 / 12.0, 0.9, 0.9));
+                    }
+                } else {
+                    ui.painter().circle_filled(rect.center(), 10.0, color);
+                }
+                if selected { ui.painter().circle_stroke(rect.center(), 11.5, Stroke::new(1.5, theme::TEXT)); }
+                if response.clicked() { self.inspector_hsl_channel = key.to_owned(); }
+                response.on_hover_text(label);
+            }
+        });
+        for (label, key) in [("Hue", "h"), ("Saturation", "s"), ("Lightness", "l")] {
+            self.draw_inspector_slider(ui, label, &["colors", "hsl", self.inspector_hsl_channel.as_str(), key], -100.0, 100.0, 0.0, "");
         }
     }
 
     fn draw_audio_controls(&mut self, ui: &mut Ui) {
-        ui.label(egui::RichText::new("Audio").strong().color(theme::TEXT));
-        self.draw_slider(ui, "Volume", &["audio", "volume"], 0.0, 200.0, 100.0, "%");
-        self.draw_slider(ui, "Pan", &["audio", "pan"], -100.0, 100.0, 0.0, "");
-        self.draw_slider(ui, "Bass", &["audio", "bass"], -24.0, 24.0, 0.0, " dB");
-        self.draw_slider(ui, "Treble", &["audio", "treble"], -24.0, 24.0, 0.0, " dB");
-        let mut fade_in = self.property_bool(&["audio", "fadeIn"], false);
-        let mut fade_out = self.property_bool(&["audio", "fadeOut"], false);
-        ui.horizontal(|ui| {
-            if ui.checkbox(&mut fade_in, "Fade in").changed() {
-                self.set_property_value(&["audio", "fadeIn"], serde_json::json!(fade_in));
-            }
-            if ui.checkbox(&mut fade_out, "Fade out").changed() {
-                self.set_property_value(&["audio", "fadeOut"], serde_json::json!(fade_out));
-            }
-        });
-        if fade_in { self.draw_slider(ui, "Fade in duration", &["audio", "fadeInDuration"], 0.0, 10.0, 1.0, " s"); }
-        if fade_out { self.draw_slider(ui, "Fade out duration", &["audio", "fadeOutDuration"], 0.0, 10.0, 1.0, " s"); }
+        egui::Frame::new().fill(theme::CARD).stroke(Stroke::new(1.0, theme::BORDER)).corner_radius(CornerRadius::same(20))
+            .inner_margin(egui::Margin::same(12)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    icons::draw_at(ui.painter(), ui.cursor().min + Vec2::new(12.0, 12.0), 22.0, "music", theme::MUTED);
+                    ui.add_space(28.0);
+                    ui.label(egui::RichText::new("Audio").font(theme::bold(18.0)).color(theme::TEXT));
+                });
+                ui.add_space(10.0);
+                self.draw_inspector_slider(ui, "Volume", &["audio", "volume"], 0.0, 200.0, 100.0, "%");
+                self.draw_inspector_slider(ui, "Pan", &["audio", "pan"], -100.0, 100.0, 0.0, "");
+                self.draw_inspector_slider(ui, "Bass", &["audio", "bass"], -24.0, 24.0, 0.0, " dB");
+                self.draw_inspector_slider(ui, "Treble", &["audio", "treble"], -24.0, 24.0, 0.0, " dB");
+                let mut fade_in = self.property_bool(&["audio", "fadeIn"], false);
+                let mut fade_out = self.property_bool(&["audio", "fadeOut"], false);
+                ui.horizontal(|ui| {
+                    if ui.checkbox(&mut fade_in, "Fade in").changed() { self.set_property_value(&["audio", "fadeIn"], serde_json::json!(fade_in)); }
+                    if ui.checkbox(&mut fade_out, "Fade out").changed() { self.set_property_value(&["audio", "fadeOut"], serde_json::json!(fade_out)); }
+                });
+                if fade_in { self.draw_inspector_slider(ui, "Fade in duration", &["audio", "fadeInDuration"], 0.0, 10.0, 1.0, " s"); }
+                if fade_out { self.draw_inspector_slider(ui, "Fade out duration", &["audio", "fadeOutDuration"], 0.0, 10.0, 1.0, " s"); }
+            });
     }
 
     fn draw_effect_controls(&mut self, ui: &mut Ui) {
-        ui.add_space(6.0);
-        self.draw_transition_controls(ui);
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Filter presets").strong().color(theme::TEXT));
-        let selected = self.property_string(&["effects", "preset", "id"], "none");
-        let mut preset = selected.clone();
-        ui.horizontal_wrapped(|ui| {
-            for (id, label) in [("none", "None"), ("vivid", "Vivid"), ("noir", "Noir"), ("fade", "Fade"), ("warm", "Warm"), ("cool", "Cool"), ("cinema", "Cinema"), ("retro", "Retro")] {
-                if ui.selectable_value(&mut preset, id.to_owned(), label).clicked() {
-                    self.set_property_value(&["effects", "preset", "id"], serde_json::json!(id));
+        egui::Frame::new().fill(theme::CARD).stroke(Stroke::new(1.0, theme::BORDER))
+            .corner_radius(CornerRadius::same(20)).inner_margin(egui::Margin::same(12)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    icons::draw_at(ui.painter(), ui.cursor().min + Vec2::new(12.0, 12.0), 22.0, "sparkles", theme::MUTED);
+                    ui.add_space(28.0);
+                    ui.label(egui::RichText::new("Effects").font(theme::bold(18.0)).color(theme::TEXT));
+                });
+                ui.add_space(10.0);
+                for (key, label, icon) in [("effects:transitions", "Transitions", "transition"), ("effects:filters", "Filters", "palette"), ("effects:video", "Video Effects", "film")] {
+                    self.draw_accordion_header(ui, key, label, icon);
+                    if self.inspector_open_section.as_deref() == Some(key) {
+                        ui.add_space(7.0);
+                        egui::Frame::new().fill(theme::CARD_BOTTOM).stroke(Stroke::new(1.0, theme::BORDER))
+                            .corner_radius(CornerRadius::same(16)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+                                match key {
+                                    "effects:transitions" => self.draw_transition_controls(ui),
+                                    "effects:filters" => self.draw_filter_controls(ui),
+                                    "effects:video" => self.draw_video_effect_controls(ui),
+                                    _ => {}
+                                }
+                            });
+                        ui.add_space(7.0);
+                    }
+                    ui.add_space(7.0);
                 }
-            }
-        });
-        if selected != "none" { self.draw_slider(ui, "Preset intensity", &["effects", "preset", "intensity"], 0.0, 100.0, 100.0, "%"); }
-        ui.add_space(10.0);
-        for (group, label, controls) in effect_definitions().iter().copied() {
-            let mut enabled = self.property_bool(&["effects", group, "enabled"], false);
-            ui.horizontal(|ui| {
-                if ui.checkbox(&mut enabled, "").changed() {
-                    self.set_property_value(&["effects", group, "enabled"], serde_json::json!(enabled));
-                }
-                ui.label(egui::RichText::new(label).strong().color(theme::TEXT));
             });
-            if enabled {
-                for (key, title, min, max, default, unit) in controls {
-                    self.draw_slider(ui, title, &["effects", group, key], *min, *max, *default, unit);
+    }
+
+    fn draw_filter_controls(&mut self, ui: &mut Ui) {
+        let selected = self.property_string(&["effects", "preset", "id"], "none");
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Filter presets").color(theme::TEXT));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("Reset").clicked() {
+                    self.set_property_value(&["effects", "preset", "id"], serde_json::json!("none"));
+                    self.set_property_value(&["effects", "preset", "intensity"], serde_json::json!(100.0));
                 }
-                ui.add_space(8.0);
+            });
+        });
+        ui.add_space(7.0);
+        let mut preset = selected;
+        let presets = [
+            ("none", "None", Color32::from_rgb(255, 145, 90), Color32::from_rgb(43, 89, 158)),
+            ("vivid", "Vivid", Color32::from_rgb(255, 59, 112), Color32::from_rgb(76, 52, 213)),
+            ("noir", "Noir", Color32::from_rgb(178, 181, 186), Color32::from_rgb(38, 40, 44)),
+            ("fade", "Fade", Color32::from_rgb(239, 167, 124), Color32::from_rgb(107, 112, 153)),
+            ("warm", "Warm", Color32::from_rgb(255, 166, 105), Color32::from_rgb(170, 77, 56)),
+            ("cool", "Cool", Color32::from_rgb(118, 195, 235), Color32::from_rgb(43, 71, 146)),
+            ("cinema", "Cinema", Color32::from_rgb(231, 126, 117), Color32::from_rgb(46, 60, 108)),
+            ("retro", "Retro", Color32::from_rgb(208, 155, 107), Color32::from_rgb(85, 76, 128)),
+        ];
+        let button_width = (ui.available_width() - ui.spacing().item_spacing.x * 3.0) / 4.0;
+        for row in presets.chunks(4) {
+            ui.horizontal(|ui| {
+                for (id, label, top, bottom) in row {
+                    let chosen = preset == *id;
+                    let (tile, response) = ui.allocate_exact_size(Vec2::new(button_width, 78.0), Sense::click());
+                    let swatch = Rect::from_min_size(tile.min, Vec2::new(tile.width(), 56.0));
+                    ui.painter().add(egui::Shape::mesh(theme::gradient_card(swatch, 8.0, *top, *bottom)));
+                    ui.painter().circle_filled(Pos2::new(swatch.max.x - 13.0, swatch.min.y + 13.0), 5.0, Color32::from_rgb(255, 238, 174));
+                    if chosen { ui.painter().rect_stroke(swatch, CornerRadius::same(8), Stroke::new(1.5, theme::TEXT), StrokeKind::Inside); }
+                    ui.painter().text(Pos2::new(tile.center().x, swatch.max.y + 10.0), Align2::CENTER_CENTER, *label, theme::font(10.0), theme::TEXT);
+                    if response.clicked() {
+                        preset = (*id).to_owned();
+                        self.set_property_value(&["effects", "preset", "id"], serde_json::json!(*id));
+                    }
+                    response.on_hover_text(*label);
+                }
+            });
+            ui.add_space(3.0);
+        }
+        if preset != "none" { self.draw_inspector_slider(ui, "Intensity", &["effects", "preset", "intensity"], 0.0, 100.0, 100.0, "%"); }
+        for group in ["blur", "grain"] {
+            if let Some((_, label, controls)) = effect_definitions().iter().find(|(key, _, _)| *key == group).copied() {
+                ui.add_space(7.0);
+                let section_key = format!("effect:{group}");
+                self.draw_accordion_header(ui, &section_key, label, effect_icon(group));
+                if self.inspector_open_section.as_deref() == Some(section_key.as_str()) {
+                    ui.add_space(5.0);
+                    self.draw_single_effect_controls(ui, group, controls);
+                }
             }
         }
+    }
+
+    fn draw_video_effect_controls(&mut self, ui: &mut Ui) {
+        for (group, label, controls) in effect_definitions().iter().copied() {
+            if group == "blur" || group == "grain" { continue; }
+            let section_key = format!("effect:{group}");
+            self.draw_accordion_header(ui, &section_key, label, effect_icon(group));
+            if self.inspector_open_section.as_deref() == Some(section_key.as_str()) {
+                ui.add_space(6.0);
+                self.draw_single_effect_controls(ui, group, controls);
+                ui.add_space(6.0);
+            }
+            ui.add_space(6.0);
+        }
+    }
+
+    fn draw_single_effect_controls(&mut self, ui: &mut Ui, group: &str, controls: &[EffectControl]) {
+        egui::Frame::new().fill(theme::CARD).stroke(Stroke::new(1.0, theme::BORDER)).corner_radius(CornerRadius::same(14))
+            .inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+                let mut enabled = self.property_bool(&["effects", group, "enabled"], false);
+                ui.horizontal(|ui| {
+                    if ui.checkbox(&mut enabled, "Enabled").changed() {
+                        self.set_property_value(&["effects", group, "enabled"], serde_json::json!(enabled));
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("Reset").clicked() {
+                            self.set_property_value(&["effects", group, "enabled"], serde_json::json!(false));
+                            for (key, _, _, _, default, _) in controls { self.set_property_value(&["effects", group, key], serde_json::json!(default)); }
+                        }
+                    });
+                });
+                for (key, title, min, max, default, unit) in controls {
+                    self.draw_inspector_slider(ui, title, &["effects", group, key], *min, *max, *default, unit);
+                }
+            });
     }
 
     fn draw_transition_controls(&mut self, ui: &mut Ui) {
@@ -2497,41 +2916,31 @@ impl PlutoApp {
     }
 
     fn draw_text_controls(&mut self, ui: &mut Ui) {
-        ui.add_space(6.0);
-        ui.label(egui::RichText::new("Title").strong().color(theme::TEXT));
-        self.draw_text_field(ui, "Main text", &["text", "title"]);
-        self.draw_text_field(ui, "Subtitle", &["text", "sub"]);
-        self.draw_text_field(ui, "Caption", &["text", "caption"]);
-        self.draw_slider(ui, "Text size", &["text", "size"], 8.0, 400.0, 100.0, "%");
-        ui.label(egui::RichText::new("Alignment").strong().color(theme::TEXT));
-        let mut alignment = self.property_string(&["text", "align"], "center");
-        ui.horizontal(|ui| {
-            for (value, label) in [("left", "Left"), ("center", "Center"), ("right", "Right")] {
-                if ui.selectable_value(&mut alignment, value.to_owned(), label).changed() {
-                    self.set_property_value(&["text", "align"], serde_json::json!(value));
-                }
-            }
-        });
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new("Choose the Text tool, then drag a box in the preview to place a title.").small().color(theme::MUTED));
-    }
-
-    fn draw_number_row(&mut self, ui: &mut Ui, label: &str, path: &[&str], default: f64, unit: &str) {
-        let mut value = self.property_number(path, default);
-        let response = ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(label).color(theme::MUTED));
-            ui.add(egui::DragValue::new(&mut value).speed(0.5).suffix(unit))
-        }).inner;
-        if response.changed() { self.set_number(path, value); }
-    }
-
-    fn draw_scale_row(&mut self, ui: &mut Ui, label: &str, axis: &str) {
-        let mut value = self.property_number(&["transform", "scale", axis], 100.0);
-        let response = ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(label).color(theme::MUTED));
-            ui.add(egui::DragValue::new(&mut value).speed(0.5).suffix(" %"))
-        }).inner;
-        if response.changed() { self.set_scale_axis(axis, value); }
+        egui::Frame::new().fill(theme::CARD).stroke(Stroke::new(1.0, theme::BORDER)).corner_radius(CornerRadius::same(20))
+            .inner_margin(egui::Margin::same(12)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    icons::draw_at(ui.painter(), ui.cursor().min + Vec2::new(12.0, 12.0), 22.0, "type", theme::MUTED);
+                    ui.add_space(28.0);
+                    ui.label(egui::RichText::new("Text").font(theme::bold(18.0)).color(theme::TEXT));
+                });
+                ui.add_space(12.0);
+                self.draw_text_field(ui, "Main text", &["text", "title"]);
+                self.draw_text_field(ui, "Subtitle", &["text", "sub"]);
+                self.draw_text_field(ui, "Caption", &["text", "caption"]);
+                self.draw_inspector_slider(ui, "Text size", &["text", "size"], 8.0, 400.0, 100.0, "%");
+                ui.label(egui::RichText::new("Alignment").strong().color(theme::TEXT));
+                let mut alignment = self.property_string(&["text", "align"], "center");
+                ui.horizontal(|ui| {
+                    for (value, label) in [("left", "Left"), ("center", "Center"), ("right", "Right")] {
+                        if ui.selectable_value(&mut alignment, value.to_owned(), label).changed() {
+                            self.set_property_value(&["text", "align"], serde_json::json!(value));
+                        }
+                    }
+                });
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new("Choose the Text tool, then drag a box in the preview to place a title.").small().color(theme::MUTED));
+            });
     }
 
     fn draw_slider(&mut self, ui: &mut Ui, label: &str, path: &[&str], min: f64, max: f64, default: f64, unit: &str) {
@@ -3159,6 +3568,35 @@ impl PlutoApp {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn inspector_hsv(hue: f32, saturation: f32, value: f32) -> Color32 {
+    let h = (hue.rem_euclid(1.0) * 6.0).floor();
+    let f = hue.rem_euclid(1.0) * 6.0 - h;
+    let p = value * (1.0 - saturation);
+    let q = value * (1.0 - f * saturation);
+    let t = value * (1.0 - (1.0 - f) * saturation);
+    let (r, g, b) = match h as u8 {
+        0 => (value, t, p), 1 => (q, value, p), 2 => (p, value, t),
+        3 => (p, q, value), 4 => (t, p, value), _ => (value, p, q),
+    };
+    Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
+}
+
+fn inspector_mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let blend = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgba_unmultiplied(blend(a.r(), b.r()), blend(a.g(), b.g()), blend(a.b(), b.b()), blend(a.a(), b.a()))
+}
+
+fn effect_icon(group: &str) -> &'static str {
+    match group {
+        "blur" => "blur", "grain" => "grain", "chromatic" => "chroma", "glow" => "glow",
+        "glitch" => "glitch", "pixelate" => "pixel", "sharpen" => "detail", "lens" | "fisheye" => "distort",
+        "scanlines" => "scan", "shake" => "shake", "filmBurn" => "sparkles", "halftone" => "stylize",
+        "posterize" => "palette", "lightLeak" => "sun", "mirror" => "grid", "eq" => "sliders",
+        "reverb" | "delay" => "wave", "compressor" | "limiter" | "denoise" => "sliders", _ => "sparkles",
+    }
+}
 
 fn load_logo(ctx: &egui::Context) -> Option<egui::TextureHandle> {
     let img = image::load_from_memory_with_format(LOGO_ICO, image::ImageFormat::Ico)
