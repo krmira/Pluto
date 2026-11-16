@@ -46,9 +46,15 @@ jobs:
         working-directory: Backdoor
       - name: Download Raylib MinGW binaries
         run: |
-          curl -L -o /tmp/raylib.tar.gz https://github.com/raysan5/raylib/releases/download/5.5/raylib-5.5_minimal_w64-mingw.tar.gz
-          mkdir -p /tmp/raylib
-          tar -xzf /tmp/raylib.tar.gz -C /tmp/raylib --strip-components=1
+          curl -L --fail --show-error -o /tmp/raylib.zip https://github.com/raysan5/raylib/releases/download/5.5/raylib-5.5_win64_mingw-w64.zip
+          mkdir -p /tmp/raylib-unpack
+          unzip -q /tmp/raylib.zip -d /tmp/raylib-unpack
+          raylib_header="$(find /tmp/raylib-unpack -type f -name raylib.h -print -quit)"
+          test -n "$raylib_header"
+          raylib_root="$(dirname "$(dirname "$raylib_header")")"
+          cp -R "$raylib_root" /tmp/raylib
+          test -f /tmp/raylib/include/raylib.h
+          test -f /tmp/raylib/lib/libraylib.a
       - name: Download and cache FFmpeg when needed
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         run: |
