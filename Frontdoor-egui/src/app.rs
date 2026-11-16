@@ -348,7 +348,13 @@ impl PlutoApp {
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+<<<<<<< Updated upstream
         let (space, left, right, delete, undo, redo, home, end, add_keyframe, previous_keyframe, next_keyframe, cursor_tool, hand_tool, razor_tool, text_tool, text_focus) = ctx.input(|input| (
+=======
+        let (save_project, open_project, space, left, right, delete, undo, redo, home, end, add_keyframe, previous_keyframe, next_keyframe, cursor_tool, hand_tool, razor_tool, text_tool) = ctx.input(|input| (
+            input.modifiers.command && input.key_pressed(egui::Key::S),
+            input.modifiers.command && input.key_pressed(egui::Key::O),
+>>>>>>> Stashed changes
             input.key_pressed(egui::Key::Space),
             input.key_pressed(egui::Key::ArrowLeft),
             input.key_pressed(egui::Key::ArrowRight),
@@ -364,9 +370,19 @@ impl PlutoApp {
             input.key_pressed(egui::Key::H) && !input.modifiers.command,
             input.key_pressed(egui::Key::C) && !input.modifiers.command,
             input.key_pressed(egui::Key::T) && !input.modifiers.command,
+<<<<<<< Updated upstream
             ctx.egui_wants_keyboard_input(),
         ));
         if text_focus { return; }
+=======
+        ));
+        // Context accessors lock egui's shared state; keep this outside the
+        // ctx.input closure to avoid recursively locking it during the first UI frame.
+        let text_focus = ctx.egui_wants_keyboard_input();
+        if text_focus { return; }
+        if save_project { self.save_project(); }
+        if open_project { self.open_project(); }
+>>>>>>> Stashed changes
         if space {
             self.playing = !self.playing;
             if self.playing && self.playhead >= self.project_duration { self.playhead = 0.0; }
@@ -1203,6 +1219,13 @@ impl PlutoApp {
             )
             .pick_files();
         let Some(files) = files else { return };
+<<<<<<< Updated upstream
+=======
+        self.import_media_paths(files);
+    }
+
+    fn import_media_paths(&mut self, files: Vec<PathBuf>) {
+>>>>>>> Stashed changes
         self.status = None;
         for path in files {
             let path = match path.canonicalize() {
@@ -1224,6 +1247,79 @@ impl PlutoApp {
         }
     }
 
+<<<<<<< Updated upstream
+=======
+    fn save_project(&mut self) {
+        let dialog = rfd::FileDialog::new()
+            .add_filter("Pluto project", &["pluto"])
+            .set_file_name(format!("{}.pluto", safe_filename(&self.name)));
+        if let Some(path) = dialog.save_file() {
+            let project = serde_json::json!({
+                "format": "pluto-project",
+                "version": 1,
+                "name": &self.name,
+                "fps": self.fps,
+                "timeline": &self.timeline,
+            });
+            match serde_json::to_vec_pretty(&project).and_then(|bytes| std::fs::write(&path, bytes).map_err(Into::into)) {
+                Ok(()) => self.status = Some(format!("Saved project: {}", path.file_name().and_then(|name| name.to_str()).unwrap_or("project.pluto"))),
+                Err(error) => self.status = Some(format!("Could not save project: {error}")),
+            }
+        }
+    }
+
+    fn open_project(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Pluto project", &["pluto", "json"])
+            .pick_file() else { return };
+        let loaded = std::fs::read(&path)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|error| error.to_string()))
+            .and_then(|value| {
+                if value.get("format").and_then(serde_json::Value::as_str) != Some("pluto-project")
+                    || value.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
+                    return Err("Unsupported Pluto project format or version".to_owned());
+                }
+                let name = value.get("name").and_then(serde_json::Value::as_str).unwrap_or("Untitled project").to_owned();
+                let fps = value.get("fps").and_then(serde_json::Value::as_f64).filter(|fps| fps.is_finite() && *fps > 0.0).unwrap_or(30.0);
+                let timeline: Timeline = serde_json::from_value(value.get("timeline").cloned().ok_or("Project has no timeline")?)
+                    .map_err(|error| error.to_string())?;
+                Ok((name, fps, timeline))
+            });
+        match loaded {
+            Ok((name, fps, timeline)) => {
+                let paths: HashSet<PathBuf> = timeline.clips().iter()
+                    .filter_map(|clip| clip.extra.get("path").and_then(serde_json::Value::as_str).map(PathBuf::from))
+                    .filter(|path| path.exists()).collect();
+                self.playing = false;
+                self.name = name;
+                self.fps = fps;
+                self.timeline = timeline;
+                self.magnet = self.timeline.snapping;
+                self.undo.clear();
+                self.redo.clear();
+                self.selected_clip = None;
+                self.selected_clips.clear();
+                self.selected_keyframes.clear();
+                self.playhead = 0.0;
+                self.preview_request = None;
+                self.preview_texture = None;
+                self.next_clip_id = self.timeline.clips().iter().filter_map(|clip| {
+                    clip.id.rsplit('-').next().and_then(|value| value.parse::<u64>().ok())
+                }).max().unwrap_or(0) + 1;
+                self.next_group_id = self.timeline.clips().iter().filter_map(|clip| {
+                    clip.extra.get("groupId").and_then(serde_json::Value::as_str)
+                        .and_then(|value| value.strip_prefix("group-")).and_then(|value| value.parse::<u64>().ok())
+                }).max().unwrap_or(0) + 1;
+                self.refresh_timeline_duration();
+                self.import_media_paths(paths.into_iter().collect());
+                self.status = Some("Project opened".to_owned());
+            }
+            Err(error) => self.status = Some(format!("Could not open project: {error}")),
+        }
+    }
+
+>>>>>>> Stashed changes
     fn poll_import_events(&mut self, ctx: &egui::Context) {
         while let Ok((path, result)) = self.import_events.try_recv() {
             self.pending_media_paths.remove(&path);

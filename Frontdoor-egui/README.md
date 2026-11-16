@@ -18,6 +18,11 @@ for comparison during the migration; the native build does not load it.
 - Native image and video export settings for PNG/JPEG/WebP/AVIF and
   MP4/WebM/GIF, including quality, frame rate, audio, looping, metadata,
   color-space, dimensions, and aspect-ratio lock.
+<<<<<<< Updated upstream
+=======
+- Versioned `.pluto` project files with Ctrl+S/Ctrl+O save and open shortcuts;
+  opening restores the timeline and reloads media from its stored paths.
+>>>>>>> Stashed changes
 - Transform, color, effect, title, transition, and audio-detach controls write
   to the same clip properties consumed by the exporter.
 
@@ -25,8 +30,13 @@ for comparison during the migration; the native build does not load it.
 
 The egui shell and primary editing path are in place, but full behavior parity
 is not complete. The current live preview shows one active video layer at a
+<<<<<<< Updated upstream
 time; multi-track compositing, title-layer preview, synced audio playback,
 project save/load, and final pixel-level widget polish remain outstanding.
+=======
+time; multi-track compositing, synced audio playback, and final pixel-level
+widget polish remain outstanding.
+>>>>>>> Stashed changes
 Some multi-selection, grouping, and keyframe operations are implemented but
 still need broader interaction testing. The shared FFmpeg engine still handles
 full-timeline export, including the stacked video/audio layers and transitions.

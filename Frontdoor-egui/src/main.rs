@@ -44,6 +44,10 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title("Pluto")
             .with_app_id("pluto")
+<<<<<<< Updated upstream
+=======
+            .with_visible(true)
+>>>>>>> Stashed changes
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([1000.0, 640.0])
             // The web frontend draws its own title bar (`.ed-top`) and its own
