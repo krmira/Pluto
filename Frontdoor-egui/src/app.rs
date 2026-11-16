@@ -348,13 +348,9 @@ impl PlutoApp {
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-<<<<<<< Updated upstream
-        let (space, left, right, delete, undo, redo, home, end, add_keyframe, previous_keyframe, next_keyframe, cursor_tool, hand_tool, razor_tool, text_tool, text_focus) = ctx.input(|input| (
-=======
         let (save_project, open_project, space, left, right, delete, undo, redo, home, end, add_keyframe, previous_keyframe, next_keyframe, cursor_tool, hand_tool, razor_tool, text_tool) = ctx.input(|input| (
             input.modifiers.command && input.key_pressed(egui::Key::S),
             input.modifiers.command && input.key_pressed(egui::Key::O),
->>>>>>> Stashed changes
             input.key_pressed(egui::Key::Space),
             input.key_pressed(egui::Key::ArrowLeft),
             input.key_pressed(egui::Key::ArrowRight),
@@ -370,11 +366,6 @@ impl PlutoApp {
             input.key_pressed(egui::Key::H) && !input.modifiers.command,
             input.key_pressed(egui::Key::C) && !input.modifiers.command,
             input.key_pressed(egui::Key::T) && !input.modifiers.command,
-<<<<<<< Updated upstream
-            ctx.egui_wants_keyboard_input(),
-        ));
-        if text_focus { return; }
-=======
         ));
         // Context accessors lock egui's shared state; keep this outside the
         // ctx.input closure to avoid recursively locking it during the first UI frame.
@@ -382,7 +373,6 @@ impl PlutoApp {
         if text_focus { return; }
         if save_project { self.save_project(); }
         if open_project { self.open_project(); }
->>>>>>> Stashed changes
         if space {
             self.playing = !self.playing;
             if self.playing && self.playhead >= self.project_duration { self.playhead = 0.0; }
@@ -1219,13 +1209,10 @@ impl PlutoApp {
             )
             .pick_files();
         let Some(files) = files else { return };
-<<<<<<< Updated upstream
-=======
         self.import_media_paths(files);
     }
 
     fn import_media_paths(&mut self, files: Vec<PathBuf>) {
->>>>>>> Stashed changes
         self.status = None;
         for path in files {
             let path = match path.canonicalize() {
@@ -1247,8 +1234,6 @@ impl PlutoApp {
         }
     }
 
-<<<<<<< Updated upstream
-=======
     fn save_project(&mut self) {
         let dialog = rfd::FileDialog::new()
             .add_filter("Pluto project", &["pluto"])
@@ -1319,7 +1304,6 @@ impl PlutoApp {
         }
     }
 
->>>>>>> Stashed changes
     fn poll_import_events(&mut self, ctx: &egui::Context) {
         while let Ok((path, result)) = self.import_events.try_recv() {
             self.pending_media_paths.remove(&path);
