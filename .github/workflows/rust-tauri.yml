@@ -1,4 +1,4 @@
-name: Rust and Tauri
+name: Pluto native C frontend
 
 on:
   push:
@@ -19,83 +19,8 @@ permissions:
   contents: read
 
 jobs:
-  timeline-core:
-    name: Timeline core checks
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: Backdoor -> target
-      - run: cargo check -p pluto-timeline-core
-        working-directory: Backdoor
-
-  tauri-windows:
-    name: Portable Windows preview build
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Restore cached FFmpeg tools
-        id: ffmpeg-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: Backdoor/desktop/src-tauri/ffmpeg
-          # Bump v1 when you want this job to fetch a newer Chocolatey FFmpeg package.
-          key: ffmpeg-windows-x64-chocolatey-v1
-      - name: Install FFmpeg
-        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: choco install ffmpeg --yes --no-progress
-      - name: Stage FFmpeg for the desktop bundle
-        id: ffmpeg-stage
-        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          $ffmpegBundle = Join-Path $env:GITHUB_WORKSPACE 'Backdoor/desktop/src-tauri/ffmpeg'
-          New-Item -ItemType Directory -Force -Path $ffmpegBundle | Out-Null
-          $ffmpegExe = Get-ChildItem (Join-Path $env:ChocolateyInstall 'lib/ffmpeg') -Filter ffmpeg.exe -Recurse | Select-Object -First 1
-          $ffprobeExe = Get-ChildItem (Join-Path $env:ChocolateyInstall 'lib/ffmpeg') -Filter ffprobe.exe -Recurse | Select-Object -First 1
-          if (-not $ffmpegExe -or -not $ffprobeExe) { throw 'FFmpeg executables were not found after installation.' }
-          Copy-Item $ffmpegExe.FullName $ffmpegBundle
-          Copy-Item $ffprobeExe.FullName $ffmpegBundle
-          @($ffmpegExe.Directory.FullName, $ffprobeExe.Directory.FullName) | Select-Object -Unique | ForEach-Object {
-            Get-ChildItem $_ -Filter '*.dll' | Copy-Item -Destination $ffmpegBundle
-          }
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: Backdoor -> target
-      - run: cargo build -p pluto-desktop --release
-        working-directory: Backdoor
-      - name: Assemble portable preview ZIP
-        shell: pwsh
-        run: |
-          $packageRoot = Join-Path $env:RUNNER_TEMP 'Pluto-Portable-Windows'
-          $runtimeFfmpeg = Join-Path $packageRoot 'ffmpeg'
-          $releaseExe = Join-Path $env:GITHUB_WORKSPACE 'Backdoor/target/release/pluto-desktop.exe'
-          $portableExe = Join-Path $packageRoot 'Pluto.exe'
-          $zipPath = Join-Path $env:GITHUB_WORKSPACE 'Backdoor/target/release/Pluto-Portable-Windows.zip'
-          New-Item -ItemType Directory -Force -Path $runtimeFfmpeg | Out-Null
-          Copy-Item $releaseExe $portableExe
-          Copy-Item (Join-Path $env:GITHUB_WORKSPACE 'Backdoor/desktop/src-tauri/ffmpeg/ffmpeg.exe') $runtimeFfmpeg
-          Copy-Item (Join-Path $env:GITHUB_WORKSPACE 'Backdoor/desktop/src-tauri/ffmpeg/ffprobe.exe') $runtimeFfmpeg
-          Get-ChildItem (Join-Path $env:GITHUB_WORKSPACE 'Backdoor/desktop/src-tauri/ffmpeg') -Filter '*.dll' | Copy-Item -Destination $runtimeFfmpeg
-          @(
-            'Pluto portable preview'
-            ''
-            'Unzip the archive and run Pluto.exe. Keep the ffmpeg folder beside Pluto.exe.'
-            'This preview uses the installed Microsoft Edge WebView2 Runtime.'
-          ) | Set-Content -Path (Join-Path $packageRoot 'README.txt') -Encoding utf8
-          Compress-Archive -Path (Join-Path $packageRoot '*') -DestinationPath $zipPath -Force
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Pluto-Portable-Windows
-          if-no-files-found: error
-          path: Backdoor/target/release/Pluto-Portable-Windows.zip
-
-  native-frontend:
-    name: Native C frontend build
+  portable-windows:
+    name: Build and package portable native Windows app
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -107,6 +32,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: Backdoor -> target
+      - name: Check timeline core
+        run: cargo check -p pluto-timeline-core
+        working-directory: Backdoor
       - name: Build backend FFI for Windows
         run: cargo build --release -p pluto-frontdoor-ffi --target x86_64-pc-windows-gnu
         working-directory: Backdoor
@@ -123,12 +51,23 @@ jobs:
             "New Frontdoor/pluto_interface.c" "New Frontdoor/pluto_bridge.c" "New Frontdoor/pluto_platform.c" \
             -L"/tmp/raylib/lib" -lraylib -lopengl32 -lgdi32 -lwinmm -lcomdlg32 \
             -o "pluto.exe"
-      - name: Stage backend library beside the frontend
+      - name: Package portable application
         shell: bash
         run: |
-          cp Backdoor/target/x86_64-pc-windows-gnu/release/pluto_frontdoor_ffi.dll ./pluto_frontdoor_ffi.dll
+          mkdir -p dist/Pluto
+          cp pluto.exe dist/Pluto/Pluto.exe
+          cp Backdoor/target/x86_64-pc-windows-gnu/release/pluto_frontdoor_ffi.dll dist/Pluto/
+          cat > dist/Pluto/README.txt <<'EOF'
+          Pluto native Windows preview
+
+          Run Pluto.exe. Keep pluto_frontdoor_ffi.dll beside it.
+          FFmpeg and ffprobe must be installed and available on PATH for media
+          import, preview generation, and export.
+          EOF
+          cd dist
+          zip -r Pluto-Native-Windows.zip Pluto
       - uses: actions/upload-artifact@v4
         with:
-          name: Pluto-Native-C-Frontend-Windows
+          name: Pluto-Portable-Windows
           if-no-files-found: error
-          path: pluto.exe
+          path: dist/Pluto-Native-Windows.zip
