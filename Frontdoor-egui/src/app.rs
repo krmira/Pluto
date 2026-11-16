@@ -1246,9 +1246,12 @@ impl PlutoApp {
                 "fps": self.fps,
                 "timeline": &self.timeline,
             });
-            match serde_json::to_vec_pretty(&project).and_then(|bytes| std::fs::write(&path, bytes).map_err(Into::into)) {
+            let result = serde_json::to_vec_pretty(&project)
+                .map_err(|error| format!("Could not serialize project: {error}"))
+                .and_then(|bytes| std::fs::write(&path, bytes).map_err(|error| format!("Could not write project: {error}")));
+            match result {
                 Ok(()) => self.status = Some(format!("Saved project: {}", path.file_name().and_then(|name| name.to_str()).unwrap_or("project.pluto"))),
-                Err(error) => self.status = Some(format!("Could not save project: {error}")),
+                Err(error) => self.status = Some(error),
             }
         }
     }
