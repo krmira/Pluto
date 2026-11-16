@@ -1,0 +1,14 @@
+[package]
+name = "pluto-frontdoor-ffi"
+version = "0.1.0"
+edition = "2021"
+description = "C ABI bridge between the native Pluto frontend and the Rust backend"
+
+[lib]
+name = "pluto_frontdoor_ffi"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+pluto-timeline-core = { path = "../timeline-core" }
+pluto-media-engine = { path = "../media-engine" }
+serde_json = "1"

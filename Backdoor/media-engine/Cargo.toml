@@ -1,0 +1,9 @@
+[package]
+name = "pluto-media-engine"
+version = "0.1.0"
+edition = "2021"
+description = "Shared FFmpeg media inspection and timeline rendering for Pluto"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

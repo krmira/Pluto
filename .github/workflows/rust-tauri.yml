@@ -5,11 +5,13 @@ on:
     paths:
       - "Backdoor/**"
       - "Frontdoor/**"
+      - "New Frontdoor/**"
       - ".github/workflows/rust-tauri.yml"
   pull_request:
     paths:
       - "Backdoor/**"
       - "Frontdoor/**"
+      - "New Frontdoor/**"
       - ".github/workflows/rust-tauri.yml"
   workflow_dispatch:
 
@@ -60,12 +62,6 @@ jobs:
           @($ffmpegExe.Directory.FullName, $ffprobeExe.Directory.FullName) | Select-Object -Unique | ForEach-Object {
             Get-ChildItem $_ -Filter '*.dll' | Copy-Item -Destination $ffmpegBundle
           }
-      - name: Save FFmpeg cache
-        if: steps.ffmpeg-cache.outputs.cache-hit != 'true' && steps.ffmpeg-stage.outcome == 'success'
-        uses: actions/cache/save@v4
-        with:
-          path: Backdoor/desktop/src-tauri/ffmpeg
-          key: ffmpeg-windows-x64-chocolatey-v1
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -97,3 +93,42 @@ jobs:
           name: Pluto-Portable-Windows
           if-no-files-found: error
           path: Backdoor/target/release/Pluto-Portable-Windows.zip
+
+  native-frontend:
+    name: Native C frontend build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - name: Install MinGW cross compiler
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: Backdoor -> target
+      - name: Build backend FFI for Windows
+        run: cargo build --release -p pluto-frontdoor-ffi --target x86_64-pc-windows-gnu
+        working-directory: Backdoor
+      - name: Download Raylib MinGW binaries
+        run: |
+          curl -L -o /tmp/raylib.tar.gz https://github.com/raysan5/raylib/releases/download/5.5/raylib-5.5_minimal_w64-mingw.tar.gz
+          mkdir -p /tmp/raylib
+          tar -xzf /tmp/raylib.tar.gz -C /tmp/raylib --strip-components=1
+      - name: Build native C frontend
+        shell: bash
+        run: |
+          gcc -std=c11 -O2 -Wall -Wextra -Wno-unused-parameter \
+            -I"/tmp/raylib/include" -I"New Frontdoor" \
+            "New Frontdoor/pluto_interface.c" "New Frontdoor/pluto_bridge.c" "New Frontdoor/pluto_platform.c" \
+            -L"/tmp/raylib/lib" -lraylib -lopengl32 -lgdi32 -lwinmm -lcomdlg32 \
+            -o "pluto.exe"
+      - name: Stage backend library beside the frontend
+        shell: bash
+        run: |
+          cp Backdoor/target/x86_64-pc-windows-gnu/release/pluto_frontdoor_ffi.dll ./pluto_frontdoor_ffi.dll
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Pluto-Native-C-Frontend-Windows
+          if-no-files-found: error
+          path: pluto.exe
